@@ -42,5 +42,5 @@ MIT
 ## Credits
 
 Original concept by [@leplebroyale](https://github.com/leplebroayle)
-Orinal build by [@JacksonDMiller](https://github.com/JacksonDMiller), with loads of help from [@einzie](https://x.com/einzie)  
+Original build by [@JacksonDMiller](https://github.com/JacksonDMiller), with loads of help from [@einzie](https://x.com/einzie)  
 Rebuilt and maintained by [@artdesignbySF](https://github.com/artdesignbySF) / [@leplebroyale](https://github.com/leplebroayle)
