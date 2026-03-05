@@ -1,11 +1,8 @@
 const keys = require("./config/keys");
-const {
-  authenticatedLndGrpc,
-  subscribeToInvoices,
-  createInvoice,
-} = require("ln-service");
 const Cookies = require("./models/user-model");
 const { publishFortuneCookie } = require('./nostr');
+const https = require('https');
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 fs = require("fs");
 let fortunes = "";
 let lnd = null;
@@ -19,59 +16,39 @@ process.on('unhandledRejection', (reason) => {
   console.log('Unhandled rejection caught:', reason);
 });
 
-// Initialize LND connection safely
-try {
-  const { lnd: lndConnection } = authenticatedLndGrpc(keys.lnd);
-  lnd = lndConnection;
-  sub = subscribeToInvoices({ lnd });
-
-  //listen for payments and mark invoices as paid in the database
-  sub.on("invoice_updated", async (invoice) => {
-    try {
-      if (invoice.is_confirmed === true) {
-        const doc = await Cookies.findOne({
-          invoice: invoice.request,
-        });
-        if (doc.recipient) {
-          try {
-            await publishFortuneCookie({
-              recipient: doc.recipient,
-              sender: doc.sender,
-              fortune: doc.fortune,
-              isCustom: doc.custom,
-            });
-            console.log('Nostr note published for recipient:', doc.recipient);
-          } catch (nostrErr) {
-            console.log('Nostr publish failed:', nostrErr);
-          }
-        }
-        doc.paid = true;
-        if (!doc.recipient) {
-          try {
-            await publishFortuneCookie({
-              fortune: doc.fortune,
-              isCustom: doc.custom,
-            });
-          } catch (nostrErr) {
-            console.log('Nostr publish failed:', nostrErr);
-          }
-        }
-        doc.save();
-      }
-    } catch (err) {
-      console.log(err);
+// LND REST API helper
+const lndRequest = async (path, method = 'GET', body = null) => {
+  try {
+    const macaroon = fs.readFileSync(keys.lnd.macaroonPath).toString('hex');
+    const response = await fetch(`https://localhost:8080${path}`, {
+      method,
+      headers: {
+        'Grpc-Metadata-macaroon': macaroon,
+      },
+      body: body ? JSON.stringify(body) : null,
+      agent: new https.Agent({ rejectUnauthorized: false }),
+    });
+    if (!response.ok) {
+      throw new Error(`LND API error: ${response.status} ${response.statusText}`);
     }
-  });
+    return response.json();
+  } catch (err) {
+    console.log('LND request failed:', err.message);
+    throw err;
+  }
+};
 
-  // Handle subscription errors (ln-service throws arrays of errors)
-  sub.on('error', (err) => {
-    console.log('LND subscription error:', err);
-  });
-
-  console.log("LND connection initialized successfully");
-} catch (err) {
-  console.log("Warning: LND connection failed. Lightning Network features will be unavailable.", err.message);
-}
+// Test LND connection
+(async () => {
+  try {
+    await lndRequest('/v1/getinfo');
+    console.log("LND connection initialized successfully");
+    lnd = true;
+  } catch (err) {
+    console.log("Warning: LND connection failed. Lightning Network features will be unavailable.", err.message);
+    lnd = null;
+  }
+})();
 
 fs.readFile(`./src/server/fortunes.txt`, "utf8", (err, data) => {
   if (err) throw err;
@@ -109,15 +86,14 @@ module.exports = function (app) {
         return res.status(503).send({ error: "Lightning Network unavailable" });
       }
 
-      const invoice = await createInvoice({
-        lnd,
-        tokens: 100,
-        description: "Buy a cookie",
+      const invoice = await lndRequest('/v1/invoices', 'POST', {
+        value: "100",
+        memo: "Buy a cookie",
       });
       const cookie = new Cookies({
         date: new Date(),
         fortune: fortunes[Math.floor(Math.random() * fortunes.length)],
-        invoice: invoice.request,
+        invoice: invoice.payment_request,
         paid: false,
       });
       await cookie.save();
@@ -147,10 +123,9 @@ module.exports = function (app) {
         return res.status(503).send({ error: "Lightning Network unavailable" });
       }
 
-      const invoice = await createInvoice({
-        lnd,
-        tokens: price,
-        description: "Buy a cookie",
+      const invoice = await lndRequest('/v1/invoices', 'POST', {
+        value: price.toString(),
+        memo: "Buy a cookie",
       });
       // checking for swear words in the sender field. This library is very easy to trick and should probably be replaced
       if (filter.isProfane(req.body.sender)) {
@@ -166,7 +141,7 @@ module.exports = function (app) {
         fortune:
           req.body.customFortune ||
           fortunes[Math.floor(Math.random() * fortunes.length)],
-        invoice: invoice.request,
+        invoice: invoice.payment_request,
         paid: false,
         sender: req.body.sender || "Someone",
         custom: isCookieCustom,
