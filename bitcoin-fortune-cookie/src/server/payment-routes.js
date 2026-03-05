@@ -5,6 +5,7 @@ const {
   createInvoice,
 } = require("ln-service");
 const Cookies = require("./models/user-model");
+const { publishFortuneCookie } = require('./nostr');
 fs = require("fs");
 let fortunes = "";
 let lnd = null;
@@ -32,9 +33,29 @@ try {
           invoice: invoice.request,
         });
         if (doc.recipient) {
-          console.log('Cookie paid and delivered to recipient:', doc.recipient);
+          try {
+            await publishFortuneCookie({
+              recipient: doc.recipient,
+              sender: doc.sender,
+              fortune: doc.fortune,
+              isCustom: doc.custom,
+            });
+            console.log('Nostr note published for recipient:', doc.recipient);
+          } catch (nostrErr) {
+            console.log('Nostr publish failed:', nostrErr);
+          }
         }
         doc.paid = true;
+        if (!doc.recipient) {
+          try {
+            await publishFortuneCookie({
+              fortune: doc.fortune,
+              isCustom: doc.custom,
+            });
+          } catch (nostrErr) {
+            console.log('Nostr publish failed:', nostrErr);
+          }
+        }
         doc.save();
       }
     } catch (err) {
