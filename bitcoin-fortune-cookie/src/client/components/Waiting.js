@@ -4,19 +4,10 @@ import CountUp from "react-countup";
 export default function Waiting(props) {
   const { setMode } = props;
   const [cookiesSold, setCookiesSold] = useState(null);
-  const [readyToSend, setReadyToSend] = useState(false);
 
   useEffect(() => {
     getCookiesSold();
-    getReadyToSendStatus();
   }, []);
-
-  const getReadyToSendStatus = async () => {
-    const res = await fetch("/ready-to-tweet");
-    const data = await res.json();
-    console.log(data.message);
-    setReadyToSend(data.message);
-  };
 
   const getCookiesSold = async () => {
     const res = await fetch("/cookies-sold");
@@ -29,19 +20,13 @@ export default function Waiting(props) {
       <button className="button" onClick={() => setMode("buying")}>
         Buy a cookie
       </button>
-      {readyToSend ? (
-        <button className="button" onClick={() => setMode("sending")}>
-          Send a cookie
-        </button>
-      ) : (
-        <div className="tooltip">
-          <button className="greyed-out-button">Send a cookie</button>
-          <span className="tooltiptext">
-            <h4>All our trucks are out for delivery</h4>
-            <p>(we limit the amount of tweets to prevent spaming)</p>
-          </span>
-        </div>
-      )}
+      <div className="tooltip">
+        <button className="greyed-out-button">Send a cookie</button>
+        <span className="tooltiptext">
+          <h4>All our trucks are out for delivery</h4>
+          <p>(we limit the amount of tweets to prevent spaming)</p>
+        </span>
+      </div>
 
       {cookiesSold ? (
         <p>
