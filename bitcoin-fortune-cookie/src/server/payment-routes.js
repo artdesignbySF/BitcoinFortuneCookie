@@ -5,23 +5,52 @@ const {
   createInvoice,
 } = require("ln-service");
 const Cookies = require("./models/user-model");
-const { lnd } = authenticatedLndGrpc(keys.lnd);
-const sub = subscribeToInvoices({ lnd });
 fs = require("fs");
 let fortunes = "";
-let lastTweet = new Date() - 1800000;
-var Twitter = require("twitter");
-var Jimp = require("jimp");
+let lnd = null;
+let sub = null;
 
 var Filter = require("bad-words"),
   filter = new Filter();
 
-var client = new Twitter({
-  consumer_key: keys.twitter.consumer_key,
-  consumer_secret: keys.twitter.consumer_secret,
-  access_token_key: keys.twitter.access_token_key,
-  access_token_secret: keys.twitter.access_token_secret,
+// Process-level error handler for unhandled rejections
+process.on('unhandledRejection', (reason) => {
+  console.log('Unhandled rejection caught:', reason);
 });
+
+// Initialize LND connection safely
+try {
+  const { lnd: lndConnection } = authenticatedLndGrpc(keys.lnd);
+  lnd = lndConnection;
+  sub = subscribeToInvoices({ lnd });
+
+  //listen for payments and mark invoices as paid in the database
+  sub.on("invoice_updated", async (invoice) => {
+    try {
+      if (invoice.is_confirmed === true) {
+        const doc = await Cookies.findOne({
+          invoice: invoice.request,
+        });
+        if (doc.recipient) {
+          console.log('Cookie paid and delivered to recipient:', doc.recipient);
+        }
+        doc.paid = true;
+        doc.save();
+      }
+    } catch (err) {
+      console.log(err);
+    }
+  });
+
+  // Handle subscription errors (ln-service throws arrays of errors)
+  sub.on('error', (err) => {
+    console.log('LND subscription error:', err);
+  });
+
+  console.log("LND connection initialized successfully");
+} catch (err) {
+  console.log("Warning: LND connection failed. Lightning Network features will be unavailable.", err.message);
+}
 
 fs.readFile(`./src/server/fortunes.txt`, "utf8", (err, data) => {
   if (err) throw err;
@@ -33,98 +62,15 @@ fs.readFile(`./src/server/fortunes.txt`, "utf8", (err, data) => {
   });
 });
 
-//listen for payments and mark invoices as paid in the database
-sub.on("invoice_updated", async (invoice) => {
-  try {
-    if (invoice.is_confirmed === true) {
-      const doc = await Cookies.findOne({
-        invoice: invoice.request,
-      });
-      if (doc.recipient) {
-        if (new Date() - lastTweet < 1700000) {
-          throw "Tweeting too Quickly";
-        }
-        // Fortune cookie with a recipient has been paid for so send them a tweet.
-        // put the the fortune text on the open cookie image
-        const font = await Jimp.loadFont(Jimp.FONT_SANS_32_BLACK);
-        const fontCanvas = await Jimp.create(1200, 675).catch((err) => {
-          console.error(err);
-        });
-        const destImage = await Jimp.read("./src/assets/opened-cookie.png");
-        fontCanvas
-          .print(
-            font,
-            120,
-            155,
-            {
-              text: doc.fortune,
-              alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER,
-              alignmentY: Jimp.VERTICAL_ALIGN_MIDDLE,
-            },
-            420
-          )
-          .rotate(-19);
-        destImage
-          .blit(fontCanvas, 0, 0)
-          .writeAsync(`${doc._id}.png`)
-          .then(async () => {
-            const cookieImage = await fs.readFileSync(`./${doc._id}.png`);
-            client.post(
-              "media/upload",
-              { media: cookieImage },
-              function (error, media, response) {
-                if (error) {
-                } else {
-                  const status = {
-                    status: `Hey ${doc.recipient}, \n${doc.sender} sent you a${
-                      doc.custom ? " custom" : ""
-                    } fortune cookie.\n\nSend a cookie back at BitcoinFortuneCookie.com`,
-                    media_ids: media.media_id_string,
-                  };
-                  client.post(
-                    "statuses/update",
-                    status,
-                    function (error, tweet, response) {
-                      if (error) {
-                      } else {
-                        fs.unlinkSync(`./${doc._id}.png`);
-                      }
-                    }
-                  );
-                }
-              }
-            );
-          });
-        lastTweet = new Date();
-      }
-      doc.paid = true;
-      doc.save();
-    }
-  } catch (err) {
-    console.log(error);
-  }
-});
-
 module.exports = function (app) {
   //request a cookie returns an invoice
 
   app.get("/cookies-sold", (req, res) => {
-    Cookies.countDocuments({ paid: "true" }, (err, c) => {
-      if (err) {
-        res.send({ numberOfCookies: 200 });
-      } else {
-        res.send({ numberOfCookies: c });
-      }
-    });
+    Cookies.countDocuments({ paid: true })
+      .then(c => res.send({ numberOfCookies: c }))
+      .catch(() => res.send({ numberOfCookies: 200 }));
   });
 
-  app.get("/ready-to-tweet", (req, res) => {
-    if (new Date() - lastTweet > 1800000) {
-      res.send({ message: true });
-      return;
-    }
-    res.send({ message: false });
-  });
 
   //testing
   // app.get("/pay/:invoice", async (req, res) => {
@@ -137,60 +83,79 @@ module.exports = function (app) {
   // });
 
   app.get("/request-cookie/", async (req, res) => {
-    const invoice = await createInvoice({
-      lnd,
-      tokens: 100,
-      description: "Buy a cookie",
-    });
-    const cookie = new Cookies({
-      date: new Date(),
-      fortune: fortunes[Math.floor(Math.random() * fortunes.length)],
-      invoice: invoice.request,
-      paid: false,
-    });
-    await cookie.save();
-    cookie.fortune = undefined;
-    res.send({ cookie });
+    try {
+      if (!lnd) {
+        return res.status(503).send({ error: "Lightning Network unavailable" });
+      }
+
+      const invoice = await createInvoice({
+        lnd,
+        tokens: 100,
+        description: "Buy a cookie",
+      });
+      const cookie = new Cookies({
+        date: new Date(),
+        fortune: fortunes[Math.floor(Math.random() * fortunes.length)],
+        invoice: invoice.request,
+        paid: false,
+      });
+      await cookie.save();
+      cookie.fortune = undefined;
+      res.send({ cookie });
+    } catch (err) {
+      console.log("Error creating invoice:", err.message);
+      res.status(503).send({ error: "Lightning Network unavailable" });
+    }
   });
 
   app.post("/request-cookie-delivery/", async (req, res) => {
-    let isCookieCustom = false;
-    let price = 100;
-    if (filter.isProfane(req.body.customFortune)) {
-      console.log("naughty");
-      res.send({ error: "profane" });
-      return false;
-    }
-    if (req.body.customFortune) {
-      price = 1100;
-      isCookieCustom = true;
-    }
-    const invoice = await createInvoice({
-      lnd,
-      tokens: price,
-      description: "Buy a cookie",
-    });
-    // checking for swear words in the sender field. This library is very easy to trick and should probably be replaced
-    if (filter.isProfane(req.body.sender)) {
-      req.body.sender = "Someone";
-    }
-    // making sure that the sender is captialized
-    req.body.sender =
-      req.body.sender.charAt(0).toUpperCase() + req.body.sender.slice(1);
+    try {
+      let isCookieCustom = false;
+      let price = 100;
+      if (filter.isProfane(req.body.customFortune)) {
+        console.log("naughty");
+        res.send({ error: "profane" });
+        return false;
+      }
+      if (req.body.customFortune) {
+        price = 1100;
+        isCookieCustom = true;
+      }
 
-    const cookie = new Cookies({
-      recipient: req.body.recipient,
-      date: new Date(),
-      fortune:
-        req.body.customFortune ||
-        fortunes[Math.floor(Math.random() * fortunes.length)],
-      invoice: invoice.request,
-      paid: false,
-      sender: req.body.sender || "Someone",
-      custom: isCookieCustom,
-    });
-    cookie.save();
-    res.send(cookie);
+      if (!lnd) {
+        return res.status(503).send({ error: "Lightning Network unavailable" });
+      }
+
+      const invoice = await createInvoice({
+        lnd,
+        tokens: price,
+        description: "Buy a cookie",
+      });
+      // checking for swear words in the sender field. This library is very easy to trick and should probably be replaced
+      if (filter.isProfane(req.body.sender)) {
+        req.body.sender = "Someone";
+      }
+      // making sure that the sender is captialized
+      req.body.sender =
+        req.body.sender.charAt(0).toUpperCase() + req.body.sender.slice(1);
+
+      const cookie = new Cookies({
+        recipient: req.body.recipient,
+        date: new Date(),
+        fortune:
+          req.body.customFortune ||
+          fortunes[Math.floor(Math.random() * fortunes.length)],
+        invoice: invoice.request,
+        paid: false,
+        sender: req.body.sender || "Someone",
+        custom: isCookieCustom,
+      });
+      cookie.save();
+      res.send(cookie);
+    } catch (err) {
+      console.log("Error creating invoice:", err.message);
+      res.status(503).send({ error: "Lightning Network unavailable" });
+    }
   });
 
   // check if a payment has been made

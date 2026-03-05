@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import closedCookie from "../../assets/closed-cookie.png";
-import Loader from "react-loader-spinner";
+import { TailSpin } from "react-loader-spinner";
 var QRCode = require("qrcode.react");
 let checkForPaymentInterval = null;
 
@@ -210,7 +210,7 @@ export default function Sending(props) {
           ) : (
             <span>
               {!sent ? (
-                <Loader type="Rings" color="#00BFFF" height={200} width={200} />
+                <TailSpin color="#00BFFF" height={200} width={200} />
               ) : null}
             </span>
           )}
