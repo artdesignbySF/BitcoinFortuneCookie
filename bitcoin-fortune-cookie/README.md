@@ -1,1 +1,0 @@
-Send your friends Bitcoin powered fortune cookies. 

@@ -102,4 +102,14 @@ dist
 
 # TernJS port file
 .tern-port
-bitcoin-fortune-cookie/src/server/config/keys.js
+
+# Secrets — DO NOT COMMIT
+src/server/config/keys.js
+
+# Claude Code local config
+.claude/
+CLAUDE.md
+
+# CRA production build
+/build
+

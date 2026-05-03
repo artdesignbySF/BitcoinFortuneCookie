@@ -38,6 +38,16 @@ const lndRequest = async (path, method = 'GET', body = null) => {
   }
 };
 
+// LND returns payment hashes as base64; the lookup endpoint expects hex.
+const rHashToHex = (rHashBase64) =>
+  Buffer.from(rHashBase64, 'base64').toString('hex');
+
+// Ask LND whether a given invoice has been settled.
+const isInvoiceSettled = async (paymentHashHex) => {
+  const data = await lndRequest(`/v1/invoice/${paymentHashHex}`);
+  return data.settled === true || data.state === 'SETTLED';
+};
+
 // Test LND connection
 (async () => {
   try {
@@ -94,6 +104,7 @@ module.exports = function (app) {
         date: new Date(),
         fortune: fortunes[Math.floor(Math.random() * fortunes.length)],
         invoice: invoice.payment_request,
+        paymentHash: rHashToHex(invoice.r_hash),
         paid: false,
       });
       await cookie.save();
@@ -142,6 +153,7 @@ module.exports = function (app) {
           req.body.customFortune ||
           fortunes[Math.floor(Math.random() * fortunes.length)],
         invoice: invoice.payment_request,
+        paymentHash: rHashToHex(invoice.r_hash),
         paid: false,
         sender: req.body.sender || "Someone",
         custom: isCookieCustom,
@@ -156,16 +168,41 @@ module.exports = function (app) {
 
   // check if a payment has been made
   app.get("/check-for-payment/:id", async (req, res) => {
-    let cookie = await Cookies.findById(req.params.id);
-    if (cookie.paid === true) {
-      if (cookie.recipient) {
-        res.send({ message: `a cookie was sent to ${cookie.recipient}` });
-        return;
+    try {
+      const cookie = await Cookies.findById(req.params.id);
+      if (!cookie) return res.status(404).send();
+
+      // If we haven't seen it as paid yet, ask LND directly.
+      if (!cookie.paid && cookie.paymentHash && lnd) {
+        try {
+          if (await isInvoiceSettled(cookie.paymentHash)) {
+            cookie.paid = true;
+            await cookie.save();
+
+            // Fire-and-forget: publish to Nostr without blocking the user.
+            publishFortuneCookie({
+              recipient: cookie.recipient,
+              sender: cookie.sender,
+              fortune: cookie.fortune,
+              isCustom: cookie.custom,
+            }).catch((err) => console.log("Nostr publish failed:", err.message));
+          }
+        } catch (err) {
+          console.log("Settlement check failed:", err.message);
+        }
       }
-      res.send({ fortune: cookie.fortune });
-      return;
+
+      if (cookie.paid) {
+        if (cookie.recipient) {
+          return res.send({ message: `a cookie was sent to ${cookie.recipient}` });
+        }
+        return res.send({ fortune: cookie.fortune });
+      }
+      res.status(402).send();
+    } catch (err) {
+      console.log("check-for-payment error:", err.message);
+      res.status(500).send();
     }
-    res.status(402).send();
   });
 
   // const test = async () => {

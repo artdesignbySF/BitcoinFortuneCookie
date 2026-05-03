@@ -5,6 +5,7 @@ const cookieSchema = new Schema({
   date: Date,
   fortune: String,
   invoice: String,
+  paymentHash: String,
   paid: Boolean,
   recipient: String,
   sender: String,
